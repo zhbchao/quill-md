@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: file:;"
+    />
+    <title>Quill</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header id="titlebar">
+      <div class="title" id="title">
+        <span id="doc-name">Untitled</span>
+        <span id="doc-edited" hidden>— Edited</span>
+      </div>
+    </header>
+
+    <main id="scroll">
+      <div id="editor"></div>
+      <textarea
+        id="source"
+        hidden
+        spellcheck="false"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+      ></textarea>
+    </main>
+
+    <footer id="statusbar">
+      <span id="mode-pill" hidden>Markdown · ⌘/ to return</span>
+      <span id="word-count">0 words</span>
+    </footer>
+
+    <div id="bubble" style="visibility: hidden">
+      <button data-cmd="bold" title="Bold ⌘B"><b>B</b></button>
+      <button data-cmd="italic" title="Italic ⌘I"><i>I</i></button>
+      <button data-cmd="strike" title="Strikethrough"><s>S</s></button>
+      <button data-cmd="code" title="Code ⌘E" class="mono">&lt;/&gt;</button>
+      <span class="sep"></span>
+      <button data-cmd="link" title="Link ⌘K">Link</button>
+    </div>
+
+    <div id="link-overlay" hidden>
+      <div class="link-card">
+        <input id="link-input" type="text" placeholder="Paste or type a link…" />
+        <div class="link-hint">Return to apply &nbsp;·&nbsp; Esc to cancel &nbsp;·&nbsp; leave empty to remove</div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

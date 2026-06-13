@@ -1,0 +1,101 @@
+{
+  "name": "quill-md",
+  "productName": "Quill",
+  "version": "1.0.0",
+  "description": "A refined WYSIWYG Markdown editor",
+  "author": "zhbchao <zhbchao@gmail.com>",
+  "main": "electron/main.cjs",
+  "private": true,
+  "scripts": {
+    "build": "vite build",
+    "start": "vite build && electron .",
+    "smoke": "vite build && electron . --smoke-test",
+    "pack": "vite build && electron-builder --dir -c.electronDist=node_modules/electron/dist",
+    "dist": "vite build && electron-builder"
+  },
+  "build": {
+    "appId": "com.sandbox.quill",
+    "productName": "Quill",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**",
+      "dist/**"
+    ],
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64", "x64"]
+        }
+      ],
+      "identity": null,
+      "icon": "build/icon.icns",
+      "extendInfo": {
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Markdown Document",
+            "CFBundleTypeRole": "Editor",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "net.daringfireball.markdown",
+              "public.plain-text"
+            ]
+          }
+        ]
+      }
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "fileAssociations": [
+        {
+          "ext": "md",
+          "name": "Markdown Document",
+          "role": "Editor"
+        },
+        {
+          "ext": "markdown",
+          "name": "Markdown Document",
+          "role": "Editor"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "37.10.3",
+    "electron-builder": "^26.15.3",
+    "vite": "^8.0.16",
+    "@tiptap/core": "^2.27.2",
+    "@tiptap/extension-bubble-menu": "^2.27.2",
+    "@tiptap/extension-character-count": "^2.27.2",
+    "@tiptap/extension-code-block-lowlight": "^2.27.2",
+    "@tiptap/extension-image": "^2.27.2",
+    "@tiptap/extension-link": "^2.27.2",
+    "@tiptap/extension-placeholder": "^2.27.2",
+    "@tiptap/extension-table": "^2.27.2",
+    "@tiptap/extension-table-cell": "^2.27.2",
+    "@tiptap/extension-table-header": "^2.27.2",
+    "@tiptap/extension-table-row": "^2.27.2",
+    "@tiptap/extension-task-item": "^2.27.2",
+    "@tiptap/extension-task-list": "^2.27.2",
+    "@tiptap/extension-typography": "^2.27.2",
+    "@tiptap/pm": "^2.27.2",
+    "@tiptap/starter-kit": "^2.27.2",
+    "lowlight": "^3.3.0",
+    "tippy.js": "^6.3.7",
+    "tiptap-markdown": "^0.8.10"
+  }
+}
