@@ -1,6 +1,6 @@
 # Quill
 
-A refined, distraction-free WYSIWYG Markdown editor for macOS.
+A refined, distraction-free WYSIWYG Markdown editor for macOS and Windows.
 
 Quill renders Markdown as you type — headings, emphasis, lists, quotes, code —
 while reading and writing plain `.md` files underneath. No split panes, no
@@ -10,17 +10,29 @@ preview button: the document *is* the preview.
 | --- | --- |
 | ![Quill, light mode](assets/quill-light.png) | ![Quill, dark mode](assets/quill-dark.png) |
 
-## Run it
+## Download
+
+Grab the latest build from [Releases](../../releases): a `.dmg` for macOS
+(Apple Silicon and Intel) or an `.exe` installer for Windows (x64). The
+binaries are unsigned — on macOS right-click → **Open** on first launch; on
+Windows choose **More info → Run anyway** if SmartScreen appears.
+
+Releases are produced by [GitHub Actions](.github/workflows/release.yml):
+every `v*` tag builds, smoke-tests, and packages the app on macOS and Windows
+runners, then publishes the artifacts.
+
+## Run from source
 
 ```sh
 npm install
 npm start          # builds the renderer and launches the app
 ```
 
-Package a standalone app bundle:
+Package a standalone app bundle for the current platform:
 
 ```sh
-npm run pack       # → release/mac-arm64/Quill.app
+npm run pack       # → release/mac-arm64/Quill.app (unpacked, fast)
+npm run dist       # → installable dmg / exe
 ```
 
 ## What it does
