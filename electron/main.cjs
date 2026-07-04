@@ -41,10 +41,15 @@ function titleBarOverlay() {
 }
 
 // On macOS files arrive via the open-file event; elsewhere via argv.
-function fileFromArgv(argv) {
-  return argv
+// `cwd` matters for second instances: their relative paths are relative to
+// THEIR working directory, not ours.
+function fileFromArgv(argv, cwd) {
+  const candidate = argv
     .slice(1)
-    .find((a) => /\.(md|markdown|mdown|txt)$/i.test(a) && fsSync.existsSync(a));
+    .find((a) => /\.(md|markdown|mdown|txt)$/i.test(a) && !a.startsWith('-'));
+  if (!candidate) return null;
+  const resolved = path.resolve(cwd || process.cwd(), candidate);
+  return fsSync.existsSync(resolved) ? resolved : null;
 }
 
 function sendCommand(name, arg) {
@@ -291,6 +296,16 @@ function buildMenu() {
 
 // --- IPC ---
 
+function showFileError(verb, filePath, err) {
+  if (!win || win.isDestroyed()) return;
+  dialog.showMessageBox(win, {
+    type: 'error',
+    message: `The document could not be ${verb}.`,
+    detail: `${filePath}\n\n${(err && err.message) || err}`,
+    buttons: ['OK'],
+  });
+}
+
 ipcMain.handle('doc:openDialog', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     properties: ['openFile'],
@@ -300,13 +315,23 @@ ipcMain.handle('doc:openDialog', async () => {
     ],
   });
   if (canceled || !filePaths[0]) return null;
-  const content = await fs.readFile(filePaths[0], 'utf8');
-  return { path: filePaths[0], content };
+  try {
+    const content = await fs.readFile(filePaths[0], 'utf8');
+    return { path: filePaths[0], content };
+  } catch (err) {
+    showFileError('opened', filePaths[0], err);
+    return null;
+  }
 });
 
 ipcMain.handle('doc:readFile', async (e, filePath) => {
-  const content = await fs.readFile(filePath, 'utf8');
-  return { path: filePath, content };
+  try {
+    const content = await fs.readFile(filePath, 'utf8');
+    return { path: filePath, content };
+  } catch (err) {
+    showFileError('opened', filePath, err);
+    return null;
+  }
 });
 
 ipcMain.handle('doc:save', async (e, { path: filePath, content }) => {
@@ -319,8 +344,18 @@ ipcMain.handle('doc:save', async (e, { path: filePath, content }) => {
     if (canceled || !chosen) return null;
     target = chosen;
   }
-  await fs.writeFile(target, content, 'utf8');
-  return { path: target };
+  // Write-then-rename so a crash or full disk mid-write can never leave the
+  // user's file truncated; the rename replaces the target in one step.
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.quill-tmp`);
+  try {
+    await fs.writeFile(tmp, content, 'utf8');
+    await fs.rename(tmp, target);
+    return { path: target };
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    showFileError('saved', target, err);
+    return null;
+  }
 });
 
 // 0 = save, 1 = discard, 2 = cancel
@@ -403,11 +438,11 @@ if (process.platform === 'win32' && !isSmoke && !isShot) {
   if (!app.requestSingleInstanceLock()) {
     app.quit();
   } else {
-    app.on('second-instance', (e, argv) => {
+    app.on('second-instance', (e, argv, workingDirectory) => {
       if (!win || win.isDestroyed()) return;
       if (win.isMinimized()) win.restore();
       win.focus();
-      const filePath = fileFromArgv(argv);
+      const filePath = fileFromArgv(argv, workingDirectory);
       if (filePath) {
         fs.readFile(filePath, 'utf8')
           .then((content) => sendCommand('load-file', { path: filePath, content }))

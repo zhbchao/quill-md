@@ -1,4 +1,4 @@
-import { Editor } from '@tiptap/core';
+import { Editor, Extension } from '@tiptap/core';
 import { EditorState } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
@@ -19,6 +19,24 @@ import { common, createLowlight } from 'lowlight';
 
 const quill = window.quill;
 const lowlight = createLowlight(common);
+
+// Tiptap binds strike to Mod-Shift-s, which collides with Save As on Windows
+// (no native menu there to intercept it first). Rebind to Mod-Shift-x on both
+// platforms to match the menus, and reserve Mod-Shift-s. Also swallow hard
+// breaks inside tables: tiptap-markdown can't express them and would corrupt
+// the cell on save.
+const QuillKeymap = Extension.create({
+  name: 'quillKeymap',
+  priority: 1000,
+  addKeyboardShortcuts() {
+    return {
+      'Mod-Shift-x': () => this.editor.commands.toggleStrike(),
+      'Mod-Shift-s': () => true,
+      'Shift-Enter': () => this.editor.isActive('table'),
+      'Mod-Enter': () => this.editor.isActive('table'),
+    };
+  },
+});
 
 const els = {
   scroll: document.getElementById('scroll'),
@@ -59,8 +77,12 @@ const editor = new Editor({
     Image,
     Table.configure({ resizable: false }),
     TableRow,
-    TableCell,
-    TableHeader,
+    // Exactly one paragraph per cell: anything richer (a second paragraph from
+    // pressing Enter) has no Markdown form, and tiptap-markdown's html:false
+    // fallback would replace the whole table with "[table]" in the saved file.
+    TableCell.extend({ content: 'paragraph' }),
+    TableHeader.extend({ content: 'paragraph' }),
+    QuillKeymap,
     TaskList,
     TaskItem.configure({ nested: true }),
     Typography,
@@ -100,7 +122,10 @@ const editor = new Editor({
       return false;
     },
   },
-  onUpdate: () => scheduleStateSync(),
+  onUpdate: () => {
+    markDirtyNow();
+    scheduleStateSync();
+  },
   onSelectionUpdate: () => updateBubbleState(),
 });
 
@@ -133,6 +158,19 @@ function isDirty() {
   return currentMarkdown() !== savedMarkdown;
 }
 
+// The main process gates its close-without-saving prompt on the edited flag,
+// and syncState is debounced — so a keystroke followed immediately by a close
+// would race it. Latch the flag the instant a change happens; the debounced
+// sync corrects it back down (e.g. after undo) 200ms later.
+let editedFlagSent = false;
+
+function markDirtyNow() {
+  if (!editedFlagSent) {
+    editedFlagSent = true;
+    quill.setEdited(true);
+  }
+}
+
 function scheduleStateSync() {
   clearTimeout(dirtyTimer);
   dirtyTimer = setTimeout(syncState, 200);
@@ -142,6 +180,7 @@ function syncState() {
   const dirty = isDirty();
   els.docEdited.hidden = !dirty;
   els.docName.textContent = currentPath ? basename(currentPath) : 'Untitled';
+  editedFlagSent = dirty;
   quill.setEdited(dirty);
   quill.setFile(currentPath || '');
   updateWordCount();
@@ -254,6 +293,7 @@ function toggleSource() {
 }
 
 els.source.addEventListener('input', () => {
+  markDirtyNow();
   autosizeSource();
   scheduleStateSync();
 });
@@ -262,7 +302,12 @@ els.source.addEventListener('input', () => {
 
 async function doSave(saveAs = false) {
   const markdown = currentMarkdown();
-  const result = await quill.save(saveAs ? null : currentPath, markdown);
+  let result = null;
+  try {
+    result = await quill.save(saveAs ? null : currentPath, markdown);
+  } catch {
+    // main already surfaced the error dialog; treat like a canceled save
+  }
   if (!result) return false;
   currentPath = result.path;
   savedMarkdown = markdown;
@@ -294,9 +339,9 @@ async function loadFromPath(filePath) {
   if (!(await confirmIfDirty())) return;
   try {
     const file = await quill.readFile(filePath);
-    loadDocument(file.content, file.path);
+    if (file) loadDocument(file.content, file.path);
   } catch {
-    /* unreadable file: ignore */
+    /* main already surfaced the error dialog */
   }
 }
 
@@ -365,6 +410,10 @@ function runSelfTest() {
       '```js',
       'const x = 1;',
       '```',
+      '',
+      '| a | b |',
+      '| --- | --- |',
+      '| c | d |',
     ].join('\n');
     editor.commands.setContent(sample, false);
     const out = getMarkdown();
@@ -374,7 +423,9 @@ function runSelfTest() {
       out.includes('- [ ] open task') &&
       out.includes('- [x] done task') &&
       out.includes('> a quote') &&
-      out.includes('```js');
+      out.includes('```js') &&
+      out.includes('| a | b |') &&
+      !out.includes('[table]');
     const dom =
       els.editor.querySelector('h1') &&
       els.editor.querySelector('strong') &&
@@ -547,6 +598,12 @@ window.__openMenu = (i) => IS_CUSTOM_MENU && setOpenMenu(i); // scripted screens
 
 if (IS_CUSTOM_MENU) {
   buildMenubar();
+
+  // The static UI hints are written for macOS; translate them here.
+  els.modePill.textContent = 'Markdown · Ctrl+/ to return';
+  for (const button of els.bubble.querySelectorAll('button[title]')) {
+    button.title = button.title.replace('⌘', 'Ctrl+');
+  }
 
   // An open menu owns the keyboard: capture phase, so the editor never sees
   // these keys — exactly as a native menu would behave.
