@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('quill', {
+  // QUILL_FORCE_PLATFORM lets us preview the Windows UI on macOS in tests.
+  platform: process.env.QUILL_FORCE_PLATFORM || process.platform,
+  menuAction: (name) => ipcRenderer.send('menu:action', name),
   openDialog: () => ipcRenderer.invoke('doc:openDialog'),
   readFile: (filePath) => ipcRenderer.invoke('doc:readFile', filePath),
   save: (filePath, content) => ipcRenderer.invoke('doc:save', { path: filePath, content }),

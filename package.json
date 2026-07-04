@@ -1,7 +1,7 @@
 {
   "name": "quill-md",
   "productName": "Quill",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A refined WYSIWYG Markdown editor",
   "author": "zhbchao <zhbchao@gmail.com>",
   "main": "electron/main.cjs",
@@ -29,7 +29,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64", "x64"]
+          "arch": [
+            "arm64",
+            "x64"
+          ]
         }
       ],
       "identity": null,
@@ -49,11 +52,13 @@
       }
     },
     "win": {
-      "icon": "build/icon.png",
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "fileAssociations": [
@@ -75,9 +80,6 @@
     }
   },
   "devDependencies": {
-    "electron": "37.10.3",
-    "electron-builder": "^26.15.3",
-    "vite": "^8.0.16",
     "@tiptap/core": "^2.27.2",
     "@tiptap/extension-bubble-menu": "^2.27.2",
     "@tiptap/extension-character-count": "^2.27.2",
@@ -94,8 +96,12 @@
     "@tiptap/extension-typography": "^2.27.2",
     "@tiptap/pm": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
+    "electron": "37.10.3",
+    "electron-builder": "^26.15.3",
     "lowlight": "^3.3.0",
+    "png-to-ico": "^3.0.1",
     "tippy.js": "^6.3.7",
-    "tiptap-markdown": "^0.8.10"
+    "tiptap-markdown": "^0.8.10",
+    "vite": "^8.0.16"
   }
 }

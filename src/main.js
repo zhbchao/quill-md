@@ -72,6 +72,7 @@ const editor = new Editor({
         duration: 0,
         placement: 'top',
         offset: [0, 10],
+        zIndex: 9, // below the titlebar (10) and menu dropdowns
         appendTo: () => document.body,
       },
       shouldShow: ({ editor: ed, state }) =>
@@ -386,6 +387,247 @@ function runSelfTest() {
   } catch (err) {
     quill.smokeResult(false, String((err && err.stack) || err));
   }
+}
+
+// --- Custom menu bar (Windows / Linux) ---
+// titleBarStyle 'hidden' removes the native menu bar on those platforms, so
+// Quill draws its own in the title bar, in the app's own design language.
+// macOS keeps the real menu bar (built in electron/main.cjs).
+
+const IS_CUSTOM_MENU = quill.platform !== 'darwin';
+
+const MENUS = [
+  {
+    label: 'File',
+    items: [
+      { label: 'New', cmd: 'new', keys: 'Ctrl+N' },
+      { label: 'Open…', cmd: 'open', keys: 'Ctrl+O' },
+      { sep: true },
+      { label: 'Save', cmd: 'save', keys: 'Ctrl+S' },
+      { label: 'Save As…', cmd: 'save-as', keys: 'Ctrl+Shift+S' },
+      { sep: true },
+      { label: 'Exit', action: 'quit' },
+    ],
+  },
+  {
+    label: 'Edit',
+    items: [
+      { label: 'Undo', cmd: 'undo', keys: 'Ctrl+Z' },
+      { label: 'Redo', cmd: 'redo', keys: 'Ctrl+Y' },
+      { sep: true },
+      { label: 'Cut', action: 'cut', keys: 'Ctrl+X' },
+      { label: 'Copy', action: 'copy', keys: 'Ctrl+C' },
+      { label: 'Paste', action: 'paste', keys: 'Ctrl+V' },
+      { label: 'Paste as Plain Text', action: 'pasteAndMatchStyle', keys: 'Ctrl+Shift+V' },
+      { sep: true },
+      { label: 'Select All', action: 'selectAll', keys: 'Ctrl+A' },
+    ],
+  },
+  {
+    label: 'Format',
+    items: [
+      { label: 'Bold', cmd: 'bold', keys: 'Ctrl+B' },
+      { label: 'Italic', cmd: 'italic', keys: 'Ctrl+I' },
+      { label: 'Strikethrough', cmd: 'strike', keys: 'Ctrl+Shift+X' },
+      { label: 'Inline Code', cmd: 'code', keys: 'Ctrl+E' },
+      { label: 'Link…', cmd: 'link', keys: 'Ctrl+K' },
+      { sep: true },
+      { label: 'Heading 1', cmd: 'h1', keys: 'Ctrl+Alt+1' },
+      { label: 'Heading 2', cmd: 'h2', keys: 'Ctrl+Alt+2' },
+      { label: 'Heading 3', cmd: 'h3', keys: 'Ctrl+Alt+3' },
+      { label: 'Body', cmd: 'paragraph', keys: 'Ctrl+Alt+0' },
+      { sep: true },
+      { label: 'Bulleted List', cmd: 'bulletList', keys: 'Ctrl+Shift+8' },
+      { label: 'Numbered List', cmd: 'orderedList', keys: 'Ctrl+Shift+7' },
+      { label: 'Task List', cmd: 'taskList', keys: 'Ctrl+Shift+9' },
+      { sep: true },
+      { label: 'Blockquote', cmd: 'blockquote', keys: 'Ctrl+Shift+B' },
+      { label: 'Code Block', cmd: 'codeBlock', keys: 'Ctrl+Alt+C' },
+      { label: 'Divider', cmd: 'hr' },
+    ],
+  },
+  {
+    label: 'View',
+    items: [
+      { label: 'Markdown Source', cmd: 'toggle-source', keys: 'Ctrl+/' },
+      { sep: true },
+      { label: 'Full Screen', action: 'toggle-fullscreen', keys: 'F11' },
+    ],
+  },
+];
+
+const menubarEl = document.getElementById('menubar');
+let openMenuIndex = -1;
+
+function setOpenMenu(index) {
+  openMenuIndex = index;
+  [...menubarEl.children].forEach((wrap, i) => wrap.classList.toggle('open', i === index));
+  // While a menu is open the titlebar stops being a drag region (see CSS), so
+  // clicks anywhere on it reach the DOM and dismiss the menu — native behavior.
+  document.body.classList.toggle('menu-open', index !== -1);
+}
+
+function closeMenus() {
+  if (openMenuIndex === -1) return;
+  setOpenMenu(-1);
+  // If keyboard navigation had focused a menu item (or focus fell to <body>
+  // when a dropdown closed), hand focus back to the document.
+  const el = document.activeElement;
+  if (!el || el === document.body || el.closest('#menubar')) {
+    if (sourceMode) els.source.focus();
+    else editor.commands.focus();
+  }
+}
+
+function buildMenubar() {
+  document.body.classList.add('custom-menu');
+  menubarEl.hidden = false;
+  MENUS.forEach((menu, index) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'menu';
+
+    const button = document.createElement('button');
+    button.className = 'menu-label';
+    button.textContent = menu.label;
+    button.tabIndex = -1;
+    // mousedown (not click) so the editor keeps focus and selection
+    button.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      if (e.button !== 0) return;
+      setOpenMenu(openMenuIndex === index ? -1 : index);
+    });
+    button.addEventListener('mouseenter', () => {
+      if (openMenuIndex !== -1 && openMenuIndex !== index) setOpenMenu(index);
+    });
+
+    const drop = document.createElement('div');
+    drop.className = 'menu-drop';
+    for (const item of menu.items) {
+      if (item.sep) {
+        const sep = document.createElement('div');
+        sep.className = 'menu-sep';
+        drop.appendChild(sep);
+        continue;
+      }
+      const row = document.createElement('button');
+      row.className = 'menu-item';
+      row.tabIndex = -1;
+      const name = document.createElement('span');
+      name.textContent = item.label;
+      row.appendChild(name);
+      if (item.keys) {
+        const keys = document.createElement('span');
+        keys.className = 'menu-keys';
+        keys.textContent = item.keys;
+        row.appendChild(keys);
+      }
+      row.addEventListener('mousedown', (e) => e.preventDefault());
+      row.addEventListener('mouseenter', () => row.focus()); // one highlight, mouse or keys
+      row.addEventListener('click', () => {
+        closeMenus();
+        if (item.cmd) runCommand(item.cmd);
+        else if (item.action) quill.menuAction(item.action);
+      });
+      drop.appendChild(row);
+    }
+
+    wrap.appendChild(button);
+    wrap.appendChild(drop);
+    menubarEl.appendChild(wrap);
+  });
+
+  window.addEventListener('mousedown', (e) => {
+    if (openMenuIndex !== -1 && !e.target.closest('#menubar')) closeMenus();
+  });
+  window.addEventListener('blur', closeMenus);
+  window.addEventListener('resize', closeMenus); // covers WCO maximize/restore
+}
+
+window.__openMenu = (i) => IS_CUSTOM_MENU && setOpenMenu(i); // scripted screenshots
+
+if (IS_CUSTOM_MENU) {
+  buildMenubar();
+
+  // An open menu owns the keyboard: capture phase, so the editor never sees
+  // these keys — exactly as a native menu would behave.
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (openMenuIndex === -1) return;
+      const items = [...menubarEl.children[openMenuIndex].querySelectorAll('.menu-item')];
+      const focused = items.indexOf(document.activeElement);
+      const swallow = () => {
+        e.preventDefault();
+        e.stopPropagation();
+      };
+      const switchMenu = (dir) => {
+        const next = (openMenuIndex + dir + MENUS.length) % MENUS.length;
+        setOpenMenu(next);
+        menubarEl.children[next].querySelector('.menu-item')?.focus();
+      };
+      if (e.key === 'Escape' || e.key === 'Tab') {
+        swallow();
+        closeMenus();
+      } else if (e.key === 'ArrowRight') {
+        swallow();
+        switchMenu(1);
+      } else if (e.key === 'ArrowLeft') {
+        swallow();
+        switchMenu(-1);
+      } else if (e.key === 'ArrowDown') {
+        swallow();
+        (items[focused + 1] || items[0])?.focus();
+      } else if (e.key === 'ArrowUp') {
+        swallow();
+        (focused > 0 ? items[focused - 1] : items[items.length - 1])?.focus();
+      } else if (e.key === 'Enter' && focused !== -1) {
+        swallow();
+        items[focused].click();
+      }
+    },
+    true
+  );
+
+  // With no native application menu, these shortcuts need a home here.
+  // All in-editor formatting (Ctrl+B/I/E, Ctrl+Alt+1…, Ctrl+Shift+8…) is
+  // already bound by Tiptap's keymap, so only app-level commands remain.
+  // Match physical keys (e.code) so non-Latin keyboard layouts still work.
+  let altArmed = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Alt' && !e.repeat && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
+      altArmed = true;
+      return;
+    }
+    altArmed = false;
+    if (e.key === 'F11') {
+      e.preventDefault();
+      quill.menuAction('toggle-fullscreen');
+      return;
+    }
+    if (!e.ctrlKey || e.altKey || e.metaKey) return;
+    let cmd = null;
+    if (!e.shiftKey && e.code === 'KeyN') cmd = 'new';
+    else if (!e.shiftKey && e.code === 'KeyO') cmd = 'open';
+    else if (!e.shiftKey && e.code === 'KeyS') cmd = 'save';
+    else if (e.shiftKey && e.code === 'KeyS') cmd = 'save-as';
+    else if (!e.shiftKey && e.code === 'KeyK') cmd = 'link';
+    else if (e.code === 'Slash' || e.key === '/') cmd = 'toggle-source';
+    if (cmd) {
+      e.preventDefault();
+      runCommand(cmd);
+    }
+  });
+  // Windows convention: a lone Alt press (and release) focuses the menu bar.
+  window.addEventListener('keyup', (e) => {
+    if (e.key === 'Alt' && altArmed) {
+      e.preventDefault();
+      setOpenMenu(openMenuIndex === -1 ? 0 : -1);
+    }
+    altArmed = false;
+  });
+  window.addEventListener('blur', () => {
+    altArmed = false;
+  });
 }
 
 // --- Drag & drop to open ---

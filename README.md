@@ -63,6 +63,9 @@ npm run dist       # → installable dmg / exe
 | `⌘/` | toggle Markdown source |
 | `⌘S` / `⇧⌘S` / `⌘O` / `⌘N` | save / save as / open / new |
 
+On Windows, use `Ctrl` in place of `⌘`; the menus live in the title bar
+(tap `Alt` to open them from the keyboard).
+
 ## Architecture
 
 - `electron/main.cjs` — window, native menus, dialogs, file I/O over IPC

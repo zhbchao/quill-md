@@ -63,6 +63,10 @@ function createWindow() {
       ? { trafficLightPosition: { x: 19, y: 19 } }
       : { titleBarOverlay: titleBarOverlay() }),
     backgroundColor: backgroundColor(),
+    // Packaged builds get the icon from the executable; dev needs it explicitly.
+    ...(!isMac && !app.isPackaged
+      ? { icon: path.join(__dirname, '..', 'build', 'icon.png') }
+      : {}),
     title: 'Untitled',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -80,6 +84,10 @@ function createWindow() {
   });
 
   if (isShot) {
+    setTimeout(() => {
+      console.error('SHOT_TIMEOUT');
+      app.exit(1);
+    }, 30000);
     const scrollIndex = process.argv.indexOf('--scroll');
     const scrollTo = scrollIndex !== -1 ? Number(process.argv[scrollIndex + 1]) : 0;
     win.webContents.on('did-finish-load', () => {
@@ -96,6 +104,13 @@ function createWindow() {
               `window.__editor.chain().focus().setTextSelection({ from: 22, to: 45 }).run(); null`
             );
             await new Promise((r) => setTimeout(r, 400));
+          }
+          const menuArg = process.argv.indexOf('--open-menu');
+          if (menuArg !== -1) {
+            await win.webContents.executeJavaScript(
+              `window.__openMenu && window.__openMenu(${Number(process.argv[menuArg + 1]) || 0}); null`
+            );
+            await new Promise((r) => setTimeout(r, 300));
           }
           const image = await win.webContents.capturePage();
           await fs.writeFile(shotOut, image.toPNG());
@@ -167,6 +182,14 @@ function formatItem(label, command, accelerator) {
 }
 
 function buildMenu() {
+  // Windows: titleBarStyle 'hidden' removes the native menu bar entirely, so
+  // the renderer draws its own (src/main.js) and the native menu would only
+  // duplicate accelerators. Editor shortcuts live in Tiptap's keymap; the
+  // rest are bound in the renderer.
+  if (!isMac) {
+    Menu.setApplicationMenu(null);
+    return;
+  }
   const template = [
     ...(isMac
       ? [
@@ -339,6 +362,16 @@ ipcMain.on('doc:setFile', (e, filePath) => {
 ipcMain.on('doc:closeNow', () => {
   allowClose = true;
   if (win && !win.isDestroyed()) win.close();
+});
+
+// Clipboard/window actions the custom Windows menu bar can't do from the
+// renderer. Allowlisted — nothing else is reachable over this channel.
+const EDIT_ACTIONS = new Set(['cut', 'copy', 'paste', 'pasteAndMatchStyle', 'selectAll', 'delete']);
+ipcMain.on('menu:action', (e, name) => {
+  if (!win || win.isDestroyed()) return;
+  if (EDIT_ACTIONS.has(name)) win.webContents[name]();
+  else if (name === 'quit') app.quit();
+  else if (name === 'toggle-fullscreen') win.setFullScreen(!win.isFullScreen());
 });
 
 ipcMain.on('shell:openExternal', (e, url) => {
