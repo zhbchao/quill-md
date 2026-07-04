@@ -230,6 +230,15 @@ body.custom-menu.menu-open #titlebar {
   outline: none;
 }
 
+.menu-item.disabled {
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.menu-item.disabled .menu-keys {
+  opacity: 0.5;
+}
+
 .menu-keys {
   color: var(--text-3);
   font-size: 11.5px;

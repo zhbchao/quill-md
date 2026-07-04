@@ -60,6 +60,7 @@ npm run dist       # → installable dmg / exe
 | `⇧⌘8` / `⇧⌘7` / `⇧⌘9` | bulleted / numbered / task list |
 | `⇧⌘B` | blockquote |
 | `⌥⌘C` | code block |
+| `⌥⌘T` | insert table (`Tab`/`⇧Tab` moves between cells) |
 | `⌘/` | toggle Markdown source |
 | `⌘S` / `⇧⌘S` / `⌘O` / `⌘N` | save / save as / open / new |
 

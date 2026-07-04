@@ -32,6 +32,8 @@ const QuillKeymap = Extension.create({
     return {
       'Mod-Shift-x': () => this.editor.commands.toggleStrike(),
       'Mod-Shift-s': () => true,
+      'Mod-Alt-t': () =>
+        this.editor.commands.insertTable({ rows: 3, cols: 3, withHeaderRow: true }),
       'Shift-Enter': () => this.editor.isActive('table'),
       'Mod-Enter': () => this.editor.isActive('table'),
     };
@@ -387,6 +389,15 @@ function runCommand(name, arg) {
     case 'blockquote': return chain().toggleBlockquote().run();
     case 'codeBlock': return chain().toggleCodeBlock().run();
     case 'hr': return chain().setHorizontalRule().run();
+    case 'tableInsert':
+      return chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+    case 'tableRowAbove': return chain().addRowBefore().run();
+    case 'tableRowBelow': return chain().addRowAfter().run();
+    case 'tableRowDelete': return chain().deleteRow().run();
+    case 'tableColBefore': return chain().addColumnBefore().run();
+    case 'tableColAfter': return chain().addColumnAfter().run();
+    case 'tableColDelete': return chain().deleteColumn().run();
+    case 'tableDelete': return chain().deleteTable().run();
   }
 }
 
@@ -432,9 +443,19 @@ function runSelfTest() {
       els.editor.querySelector('input[type="checkbox"]') &&
       els.editor.querySelector('blockquote') &&
       els.editor.querySelector('pre code');
+    // Table creation must produce valid Markdown (never the [table] fallback).
+    editor.commands.setContent('', false);
+    editor.commands.insertTable({ rows: 2, cols: 2, withHeaderRow: true });
+    const tableOut = getMarkdown();
+    const tableInsert = tableOut.includes('| --- | --- |') && !tableOut.includes('[table]');
     loadDocument('', null);
-    const ok = Boolean(roundTrip && dom);
-    quill.smokeResult(ok, ok ? '' : `roundTrip=${roundTrip} dom=${Boolean(dom)} out=${JSON.stringify(out)}`);
+    const ok = Boolean(roundTrip && dom && tableInsert);
+    quill.smokeResult(
+      ok,
+      ok
+        ? ''
+        : `roundTrip=${roundTrip} dom=${Boolean(dom)} tableInsert=${tableInsert} out=${JSON.stringify(out)}`
+    );
   } catch (err) {
     quill.smokeResult(false, String((err && err.stack) || err));
   }
@@ -498,6 +519,22 @@ const MENUS = [
     ],
   },
   {
+    label: 'Table',
+    items: [
+      { label: 'Insert Table', cmd: 'tableInsert', keys: 'Ctrl+Alt+T', when: 'notInTable' },
+      { sep: true },
+      { label: 'Add Row Above', cmd: 'tableRowAbove', when: 'inTable' },
+      { label: 'Add Row Below', cmd: 'tableRowBelow', when: 'inTable' },
+      { label: 'Delete Row', cmd: 'tableRowDelete', when: 'inTable' },
+      { sep: true },
+      { label: 'Add Column Before', cmd: 'tableColBefore', when: 'inTable' },
+      { label: 'Add Column After', cmd: 'tableColAfter', when: 'inTable' },
+      { label: 'Delete Column', cmd: 'tableColDelete', when: 'inTable' },
+      { sep: true },
+      { label: 'Delete Table', cmd: 'tableDelete', when: 'inTable' },
+    ],
+  },
+  {
     label: 'View',
     items: [
       { label: 'Markdown Source', cmd: 'toggle-source', keys: 'Ctrl+/' },
@@ -510,9 +547,20 @@ const MENUS = [
 const menubarEl = document.getElementById('menubar');
 let openMenuIndex = -1;
 
+function updateMenuDisabled(wrap) {
+  const inTable = !sourceMode && editor.isActive('table');
+  for (const row of wrap.querySelectorAll('.menu-item[data-when]')) {
+    const ok = row.dataset.when === 'inTable' ? inTable : !sourceMode && !inTable;
+    row.classList.toggle('disabled', !ok);
+  }
+}
+
 function setOpenMenu(index) {
   openMenuIndex = index;
-  [...menubarEl.children].forEach((wrap, i) => wrap.classList.toggle('open', i === index));
+  [...menubarEl.children].forEach((wrap, i) => {
+    wrap.classList.toggle('open', i === index);
+    if (i === index) updateMenuDisabled(wrap);
+  });
   // While a menu is open the titlebar stops being a drag region (see CSS), so
   // clicks anywhere on it reach the DOM and dismiss the menu — native behavior.
   document.body.classList.toggle('menu-open', index !== -1);
@@ -563,6 +611,7 @@ function buildMenubar() {
       const row = document.createElement('button');
       row.className = 'menu-item';
       row.tabIndex = -1;
+      if (item.when) row.dataset.when = item.when;
       const name = document.createElement('span');
       name.textContent = item.label;
       row.appendChild(name);
@@ -611,7 +660,9 @@ if (IS_CUSTOM_MENU) {
     'keydown',
     (e) => {
       if (openMenuIndex === -1) return;
-      const items = [...menubarEl.children[openMenuIndex].querySelectorAll('.menu-item')];
+      const items = [
+        ...menubarEl.children[openMenuIndex].querySelectorAll('.menu-item:not(.disabled)'),
+      ];
       const focused = items.indexOf(document.activeElement);
       const swallow = () => {
         e.preventDefault();

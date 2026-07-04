@@ -274,6 +274,22 @@ function buildMenu() {
       ],
     },
     {
+      label: 'Table',
+      submenu: [
+        formatItem('Insert Table', 'tableInsert', 'Alt+CmdOrCtrl+T'),
+        { type: 'separator' },
+        formatItem('Add Row Above', 'tableRowAbove'),
+        formatItem('Add Row Below', 'tableRowBelow'),
+        formatItem('Delete Row', 'tableRowDelete'),
+        { type: 'separator' },
+        formatItem('Add Column Before', 'tableColBefore'),
+        formatItem('Add Column After', 'tableColAfter'),
+        formatItem('Delete Column', 'tableColDelete'),
+        { type: 'separator' },
+        formatItem('Delete Table', 'tableDelete'),
+      ],
+    },
+    {
       label: 'View',
       submenu: [
         formatItem('Markdown Source', 'toggle-source', 'CmdOrCtrl+/'),
