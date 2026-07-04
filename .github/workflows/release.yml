@@ -76,7 +76,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          # installers only — the ui-screenshots artifacts land in the same
+          # download directory and must not become release assets
+          files: |
+            artifacts/*.dmg
+            artifacts/*.exe
           generate_release_notes: true
           body: |
             Quill — a refined WYSIWYG Markdown editor.
