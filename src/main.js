@@ -1,5 +1,8 @@
-import { Editor, Extension } from '@tiptap/core';
-import { EditorState } from '@tiptap/pm/state';
+import { Editor, Extension, Node as TiptapNode } from '@tiptap/core';
+import { EditorState, Plugin, PluginKey } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
 import Image from '@tiptap/extension-image';
@@ -25,6 +28,259 @@ const lowlight = createLowlight(common);
 // platforms to match the menus, and reserve Mod-Shift-s. Also swallow hard
 // breaks inside tables: tiptap-markdown can't express them and would corrupt
 // the cell on save.
+// --- Math ($…$ and $$…$$, rendered with KaTeX) ---
+
+function renderKatex(el, src, displayMode) {
+  try {
+    katex.render(src || '\\;', el, { throwOnError: false, displayMode });
+  } catch {
+    el.textContent = src;
+  }
+}
+
+// markdown-it rules: conservative TeX-style delimiters. `$x$` matches only
+// when the content has no surrounding whitespace and the closing `$` is not
+// followed by a digit, so "between $5 and $10" stays plain text.
+function markdownItMath(md) {
+  md.inline.ruler.after('escape', 'math_inline', (state, silent) => {
+    const src = state.src;
+    const start = state.pos;
+    if (src[start] !== '$' || src[start + 1] === '$') return false;
+    if (!src[start + 1] || /\s/.test(src[start + 1])) return false;
+    let end = start + 1;
+    while ((end = src.indexOf('$', end)) !== -1) {
+      if (src[end - 1] === '\\') {
+        end += 1;
+        continue;
+      }
+      break;
+    }
+    if (end === -1) return false;
+    const content = src.slice(start + 1, end);
+    if (!content || /\s$/.test(content) || content.includes('\n')) return false;
+    if (src[end + 1] && /\d/.test(src[end + 1])) return false;
+    if (!silent) {
+      const token = state.push('math_inline', 'span', 0);
+      token.content = content;
+    }
+    state.pos = end + 1;
+    return true;
+  });
+
+  md.block.ruler.after('fence', 'math_block', (state, startLine, endLine, silent) => {
+    const startPos = state.bMarks[startLine] + state.tShift[startLine];
+    const first = state.src.slice(startPos, state.eMarks[startLine]);
+    if (!first.startsWith('$$')) return false;
+    if (silent) return true;
+    let line = startLine;
+    let content = first.slice(2).trim();
+    if (content.endsWith('$$') && content.length >= 4) {
+      content = content.slice(0, -2).trim();
+    } else {
+      const parts = content ? [content] : [];
+      for (line = startLine + 1; line < endLine; line++) {
+        const text = state.src.slice(
+          state.bMarks[line] + state.tShift[line],
+          state.eMarks[line]
+        );
+        if (text.trim() === '$$') break;
+        parts.push(text);
+      }
+      content = parts.join('\n');
+    }
+    const token = state.push('math_block', 'div', 0);
+    token.content = content;
+    token.map = [startLine, line + 1];
+    state.line = line + 1;
+    return true;
+  });
+
+  md.renderer.rules.math_inline = (tokens, idx) =>
+    `<span data-math-inline="${md.utils.escapeHtml(tokens[idx].content)}"></span>`;
+  md.renderer.rules.math_block = (tokens, idx) =>
+    `<div data-math-block="${md.utils.escapeHtml(tokens[idx].content)}"></div>`;
+}
+
+function mathNodeView(displayMode) {
+  return ({ node, getPos, editor: ed }) => {
+    const dom = document.createElement(displayMode ? 'div' : 'span');
+    dom.className = displayMode ? 'math-block' : 'math-inline';
+    let current = node;
+    renderKatex(dom, current.attrs.src, displayMode);
+    dom.addEventListener('dblclick', () => {
+      openMathDialog(current.attrs.src, displayMode, (src) => {
+        ed.chain()
+          .focus()
+          .command(({ tr }) => {
+            tr.setNodeMarkup(getPos(), undefined, { src });
+            return true;
+          })
+          .run();
+      });
+    });
+    return {
+      dom,
+      update: (n) => {
+        if (n.type.name !== current.type.name) return false;
+        current = n;
+        renderKatex(dom, n.attrs.src, displayMode);
+        return true;
+      },
+      // KaTeX owns everything inside this atom node.
+      ignoreMutation: () => true,
+    };
+  };
+}
+
+const MathInline = TiptapNode.create({
+  name: 'mathInline',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  addAttributes() {
+    return { src: { default: '' } };
+  },
+  parseHTML() {
+    return [
+      {
+        tag: 'span[data-math-inline]',
+        getAttrs: (el) => ({ src: el.getAttribute('data-math-inline') || '' }),
+      },
+    ];
+  },
+  renderHTML({ node }) {
+    return ['span', { 'data-math-inline': node.attrs.src }];
+  },
+  addNodeView() {
+    return mathNodeView(false);
+  },
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state, node) {
+          state.write(`$${node.attrs.src}$`);
+        },
+        parse: {},
+      },
+    };
+  },
+});
+
+const MathBlock = TiptapNode.create({
+  name: 'mathBlock',
+  group: 'block',
+  atom: true,
+  addAttributes() {
+    return { src: { default: '' } };
+  },
+  parseHTML() {
+    return [
+      {
+        tag: 'div[data-math-block]',
+        getAttrs: (el) => ({ src: el.getAttribute('data-math-block') || '' }),
+      },
+    ];
+  },
+  renderHTML({ node }) {
+    return ['div', { 'data-math-block': node.attrs.src }];
+  },
+  addNodeView() {
+    return mathNodeView(true);
+  },
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state, node) {
+          state.write(`$$\n${node.attrs.src}\n$$`);
+          state.closeBlock(node);
+        },
+        parse: {},
+      },
+    };
+  },
+});
+
+// --- Mermaid (rendered live below ```mermaid code blocks) ---
+
+let mermaidMod = null;
+let mermaidSeq = 0;
+
+function mermaidTheme() {
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'neutral';
+}
+
+async function renderMermaid(el, src) {
+  if (!src.trim()) {
+    el.textContent = 'Empty diagram';
+    el.classList.add('mermaid-error');
+    return;
+  }
+  const id = `mmd-${++mermaidSeq}`;
+  try {
+    if (!mermaidMod) {
+      mermaidMod = (await import('mermaid')).default;
+      mermaidMod.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: mermaidTheme(),
+        fontFamily: 'inherit',
+      });
+    }
+    const { svg } = await mermaidMod.render(id, src);
+    el.innerHTML = svg;
+    el.classList.remove('mermaid-error');
+  } catch (err) {
+    document.getElementById(`d${id}`)?.remove();
+    el.textContent = String((err && err.message) || err).split('\n')[0];
+    el.classList.add('mermaid-error');
+  }
+}
+
+// Re-render diagrams when the system theme flips.
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (!mermaidMod) return;
+  mermaidMod.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: mermaidTheme(),
+    fontFamily: 'inherit',
+  });
+  for (const wrap of document.querySelectorAll('.mermaid-wrap')) {
+    const code = wrap.querySelector('code');
+    const preview = wrap.querySelector('.mermaid-preview');
+    if (code && preview) renderMermaid(preview, code.textContent);
+  }
+});
+
+// --- Find & Replace ---
+
+const searchKey = new PluginKey('quillSearch');
+const searchState = { query: '', matches: [], active: -1 };
+
+const SearchHighlight = Extension.create({
+  name: 'searchHighlight',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: searchKey,
+        props: {
+          decorations(state) {
+            if (!searchState.query || !searchState.matches.length) return DecorationSet.empty;
+            return DecorationSet.create(
+              state.doc,
+              searchState.matches.map((m, i) =>
+                Decoration.inline(m.from, m.to, {
+                  class: i === searchState.active ? 'search-hit search-hit-active' : 'search-hit',
+                })
+              )
+            );
+          },
+        },
+      }),
+    ];
+  },
+});
+
 const QuillKeymap = Extension.create({
   name: 'quillKeymap',
   priority: 1000,
@@ -52,6 +308,14 @@ const els = {
   bubble: document.getElementById('bubble'),
   linkOverlay: document.getElementById('link-overlay'),
   linkInput: document.getElementById('link-input'),
+  findBar: document.getElementById('find-bar'),
+  findInput: document.getElementById('find-input'),
+  findCount: document.getElementById('find-count'),
+  replaceInput: document.getElementById('replace-input'),
+  statusMsg: document.getElementById('status-msg'),
+  mathOverlay: document.getElementById('math-overlay'),
+  mathInput: document.getElementById('math-input'),
+  mathPreview: document.getElementById('math-preview'),
 };
 
 // --- Document state ---
@@ -70,13 +334,61 @@ const editor = new Editor({
       heading: { levels: [1, 2, 3, 4] },
       dropcursor: { color: 'var(--accent)', width: 2 },
     }),
-    CodeBlockLowlight.configure({ lowlight }),
+    CodeBlockLowlight.extend({
+      // ```mermaid blocks get a live diagram preview below the code.
+      addNodeView() {
+        return ({ node }) => {
+          const dom = document.createElement('div');
+          const pre = document.createElement('pre');
+          const code = document.createElement('code');
+          pre.appendChild(code);
+          dom.appendChild(pre);
+          const preview = document.createElement('div');
+          preview.className = 'mermaid-preview';
+          preview.contentEditable = 'false';
+          dom.appendChild(preview);
+          let timer = null;
+          let lastSrc = null;
+          const refresh = (n) => {
+            const isMermaid = n.attrs.language === 'mermaid';
+            code.className = n.attrs.language ? `language-${n.attrs.language}` : '';
+            dom.className = isMermaid ? 'mermaid-wrap' : '';
+            preview.style.display = isMermaid ? '' : 'none';
+            if (!isMermaid || n.textContent === lastSrc) return;
+            lastSrc = n.textContent;
+            clearTimeout(timer);
+            timer = setTimeout(() => renderMermaid(preview, lastSrc), 300);
+          };
+          refresh(node);
+          return {
+            dom,
+            contentDOM: code,
+            update: (n) => {
+              if (n.type.name !== 'codeBlock') return false;
+              refresh(n);
+              return true;
+            },
+            // The async SVG swap mutates our own DOM; without this,
+            // ProseMirror's DOMObserver redraws the nodeview in a loop.
+            ignoreMutation: (m) => m.target === preview || preview.contains(m.target),
+          };
+        };
+      },
+    }).configure({ lowlight }),
     Link.configure({
       openOnClick: false,
       autolink: true,
       HTMLAttributes: { rel: null, target: null },
     }),
-    Image,
+    // Keep the Markdown-relative src in the document; resolve it against the
+    // document's folder only for display.
+    Image.extend({
+      renderHTML({ HTMLAttributes }) {
+        return ['img', { ...HTMLAttributes, src: resolveImageSrc(HTMLAttributes.src) }];
+      },
+    }),
+    MathInline,
+    MathBlock,
     Table.configure({ resizable: false }),
     TableRow,
     // Exactly one paragraph per cell: anything richer (a second paragraph from
@@ -85,6 +397,7 @@ const editor = new Editor({
     TableCell.extend({ content: 'paragraph' }),
     TableHeader.extend({ content: 'paragraph' }),
     QuillKeymap,
+    SearchHighlight,
     TaskList,
     TaskItem.configure({ nested: true }),
     Typography,
@@ -123,31 +436,105 @@ const editor = new Editor({
       }
       return false;
     },
+    handlePaste(view, event) {
+      const image = [...(event.clipboardData?.files || [])].find((f) =>
+        f.type.startsWith('image/')
+      );
+      if (image) {
+        event.preventDefault();
+        void insertImageFile(image);
+        return true;
+      }
+      return false;
+    },
+    handleDrop(view, event, slice, moved) {
+      if (moved) return false;
+      const image = [...(event.dataTransfer?.files || [])].find((f) =>
+        f.type.startsWith('image/')
+      );
+      if (image) {
+        event.preventDefault();
+        const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
+        void insertImageFile(image, pos);
+        return true;
+      }
+      return false;
+    },
   },
   onUpdate: () => {
     markDirtyNow();
     scheduleStateSync();
+    scheduleDraft();
+    if (!els.findBar.hidden) {
+      computeMatches();
+      refreshSearch();
+      updateFindCount();
+    }
   },
   onSelectionUpdate: () => updateBubbleState(),
 });
 
+// tiptap-markdown parses via markdown-it; teach it the math delimiters.
+markdownItMath(editor.storage.markdown.parser.md);
+
 const getMarkdown = () => editor.storage.markdown.getMarkdown();
 
+// YAML front matter has no ProseMirror form — hold it aside verbatim and
+// re-prepend on save, so metadata survives the round-trip untouched.
+let docFrontMatter = '';
+
+function splitFrontMatter(markdown) {
+  const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(markdown);
+  return m ? { front: m[0], body: markdown.slice(m[0].length) } : { front: '', body: markdown };
+}
+
 function currentMarkdown() {
-  return sourceMode ? els.source.value : getMarkdown();
+  return sourceMode ? els.source.value : docFrontMatter + getMarkdown();
+}
+
+// Resolve a Markdown-relative image path against the open document's folder
+// for display. Handled with string ops: no node modules in the renderer.
+function resolveImageSrc(src) {
+  if (!src || /^[a-z][a-z0-9+.-]*:/i.test(src)) return src; // http:, data:, file:…
+  if (!currentPath) return src;
+  const sep = currentPath.includes('\\') ? '\\' : '/';
+  const dir = currentPath.slice(0, currentPath.lastIndexOf(sep));
+  const rel = sep === '\\' ? src.replace(/\//g, '\\') : src;
+  const full = src.startsWith('/') ? src : dir + sep + rel;
+  const posix = full.replace(/\\/g, '/');
+  return encodeURI('file://' + (posix.startsWith('/') ? '' : '/') + posix)
+    .replace(/#/g, '%23')
+    .replace(/\?/g, '%3F');
+}
+
+async function insertImageFile(file, pos) {
+  if (!currentPath) {
+    flashStatus('Save the document first to add images');
+    return;
+  }
+  const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const result = await quill.saveImage(currentPath, ext, bytes);
+  if (!result) return;
+  const image = { type: 'image', attrs: { src: result.relPath } };
+  if (typeof pos === 'number') editor.chain().focus().insertContentAt(pos, image).run();
+  else editor.chain().focus().insertContent(image).run();
 }
 
 // Replace content and reset undo history so a freshly opened
 // document can't be "undone" back into the previous one.
-function loadDocument(markdown, filePath) {
-  editor.commands.setContent(markdown, false);
+function loadDocument(markdown, filePath, keepDraft = false) {
+  currentPath = filePath || null; // set first: image srcs resolve against it
+  const { front, body } = splitFrontMatter(markdown);
+  docFrontMatter = front;
+  editor.commands.setContent(body, false);
   const { state, view } = editor;
   view.updateState(
     EditorState.create({ doc: state.doc, plugins: state.plugins, schema: state.schema })
   );
-  currentPath = filePath || null;
-  savedMarkdown = getMarkdown();
-  if (sourceMode) els.source.value = savedMarkdown;
+  if (sourceMode) els.source.value = docFrontMatter + getMarkdown();
+  savedMarkdown = currentMarkdown();
+  if (!keepDraft) quill.updateDraft({ dirty: false });
   autosizeSource();
   els.scroll.scrollTop = 0;
   editor.commands.focus('start');
@@ -264,6 +651,273 @@ els.linkOverlay.addEventListener('mousedown', (e) => {
   if (e.target === els.linkOverlay) closeLinkDialog(false);
 });
 
+// --- Status flash (transient, quiet) ---
+
+let statusTimer = null;
+function flashStatus(text, ms = 4000) {
+  els.statusMsg.textContent = text;
+  els.statusMsg.hidden = false;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => {
+    els.statusMsg.hidden = true;
+  }, ms);
+}
+
+// --- Find & Replace UI ---
+
+function refreshSearch() {
+  editor.view.dispatch(editor.state.tr.setMeta(searchKey, true));
+}
+
+function computeMatches() {
+  const q = searchState.query.toLowerCase();
+  const matches = [];
+  if (q) {
+    editor.state.doc.descendants((node, pos) => {
+      if (!node.isTextblock) return true;
+      const text = node.textBetween(0, node.content.size, '￼').toLowerCase();
+      let i = 0;
+      while ((i = text.indexOf(q, i)) !== -1) {
+        matches.push({ from: pos + 1 + i, to: pos + 1 + i + q.length });
+        i += q.length; // non-overlapping: overlaps would corrupt replace-all
+      }
+      return false;
+    });
+  }
+  searchState.matches = matches;
+  if (!matches.length) searchState.active = -1;
+  else if (searchState.active < 0 || searchState.active >= matches.length) searchState.active = 0;
+}
+
+function updateFindCount() {
+  els.findCount.textContent = searchState.matches.length
+    ? `${searchState.active + 1} of ${searchState.matches.length}`
+    : els.findInput.value
+      ? 'Not found'
+      : '';
+}
+
+function scrollToActive() {
+  const m = searchState.matches[searchState.active];
+  if (!m) return;
+  try {
+    const coords = editor.view.coordsAtPos(m.from);
+    els.scroll.scrollTop += coords.top - els.scroll.clientHeight / 2;
+  } catch {
+    /* position vanished mid-edit */
+  }
+}
+
+function updateFind(scroll = true) {
+  searchState.query = els.findInput.value;
+  computeMatches();
+  refreshSearch();
+  updateFindCount();
+  if (scroll) scrollToActive();
+}
+
+function openFind(withReplace) {
+  if (sourceMode) toggleSource();
+  const wasHidden = els.findBar.hidden;
+  els.findBar.hidden = false;
+  els.findBar.classList.toggle('with-replace', Boolean(withReplace));
+  const { from, to } = editor.state.selection;
+  const selected = editor.state.doc.textBetween(from, to, ' ');
+  if (selected && selected.length < 100) els.findInput.value = selected;
+  els.findInput.focus();
+  els.findInput.select();
+  if (!wasHidden || els.findInput.value) updateFind();
+}
+
+function closeFind() {
+  if (els.findBar.hidden) return;
+  els.findBar.hidden = true;
+  searchState.query = '';
+  computeMatches();
+  refreshSearch();
+  editor.commands.focus();
+}
+
+function findStep(dir) {
+  const n = searchState.matches.length;
+  if (!n) return;
+  searchState.active = (searchState.active + dir + n) % n;
+  refreshSearch();
+  updateFindCount();
+  scrollToActive();
+}
+
+function replaceActive() {
+  const m = searchState.matches[searchState.active];
+  if (!m) return;
+  const replacement = els.replaceInput.value;
+  editor
+    .chain()
+    .command(({ tr }) => {
+      tr.insertText(replacement, m.from, m.to);
+      return true;
+    })
+    .run();
+  updateFind();
+}
+
+function replaceAll() {
+  if (!searchState.matches.length) return;
+  const replacement = els.replaceInput.value;
+  const count = searchState.matches.length;
+  editor
+    .chain()
+    .command(({ tr }) => {
+      for (let i = searchState.matches.length - 1; i >= 0; i--) {
+        const m = searchState.matches[i];
+        tr.insertText(replacement, m.from, m.to);
+      }
+      return true;
+    })
+    .run();
+  updateFind();
+  flashStatus(`Replaced ${count} ${count === 1 ? 'occurrence' : 'occurrences'}`);
+}
+
+els.findInput.addEventListener('input', () => updateFind());
+els.findInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    findStep(e.shiftKey ? -1 : 1);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeFind();
+  }
+});
+els.replaceInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    replaceActive();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeFind();
+  }
+});
+document.getElementById('find-next').addEventListener('click', () => findStep(1));
+document.getElementById('find-prev').addEventListener('click', () => findStep(-1));
+document.getElementById('find-close').addEventListener('click', closeFind);
+document.getElementById('find-toggle-replace').addEventListener('click', () => {
+  els.findBar.classList.toggle('with-replace');
+  if (els.findBar.classList.contains('with-replace')) els.replaceInput.focus();
+});
+document.getElementById('replace-one').addEventListener('click', replaceActive);
+document.getElementById('replace-all').addEventListener('click', replaceAll);
+
+window.__openFind = (q) => {
+  openFind(false);
+  els.findInput.value = q;
+  updateFind();
+};
+
+// --- Math dialog ---
+
+let mathDialogApply = null;
+
+function openMathDialog(initial, displayMode, onApply) {
+  els.mathInput.value = initial || '';
+  mathDialogApply = onApply;
+  els.mathOverlay.hidden = false;
+  renderKatex(els.mathPreview, els.mathInput.value, displayMode);
+  els.mathPreview.dataset.display = displayMode ? '1' : '';
+  els.mathInput.focus();
+  els.mathInput.select();
+}
+
+function closeMathDialog(apply) {
+  if (els.mathOverlay.hidden) return;
+  els.mathOverlay.hidden = true;
+  const src = els.mathInput.value.trim();
+  const cb = mathDialogApply;
+  mathDialogApply = null;
+  if (apply && cb && src) cb(src);
+  else editor.commands.focus();
+}
+
+els.mathInput.addEventListener('input', () => {
+  renderKatex(els.mathPreview, els.mathInput.value, Boolean(els.mathPreview.dataset.display));
+});
+els.mathInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    closeMathDialog(true);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeMathDialog(false);
+  }
+});
+els.mathOverlay.addEventListener('mousedown', (e) => {
+  if (e.target === els.mathOverlay) closeMathDialog(false);
+});
+
+function insertMath(displayMode) {
+  if (sourceMode) return;
+  openMathDialog('', displayMode, (src) => {
+    editor
+      .chain()
+      .focus()
+      .insertContent({ type: displayMode ? 'mathBlock' : 'mathInline', attrs: { src } })
+      .run();
+  });
+}
+
+// --- Export ---
+
+function docTitle() {
+  return currentPath ? basename(currentPath).replace(/\.[^.]+$/, '') : 'Untitled';
+}
+
+async function doExportPdf() {
+  if (sourceMode) toggleSource();
+  closeFind();
+  const result = await quill.exportPdf(`${docTitle()}.pdf`);
+  if (result) flashStatus(`Exported ${basename(result.path)}`);
+}
+
+async function doExportHtml() {
+  if (sourceMode) toggleSource();
+  closeFind();
+  const body = els.editor
+    .querySelector('.ProseMirror')
+    .innerHTML.replace(/ contenteditable="[^"]*"/g, '')
+    .replace(/ draggable="[^"]*"/g, '');
+  const css = [...document.styleSheets]
+    .flatMap((sheet) => {
+      try {
+        return [...sheet.cssRules].map((rule) => rule.cssText);
+      } catch {
+        return [];
+      }
+    })
+    .join('\n');
+  const html = [
+    '<!doctype html>',
+    '<html><head><meta charset="utf-8">',
+    `<title>${docTitle().replace(/</g, '&lt;')}</title>`,
+    `<style>${css}</style>`,
+    '<style>body{height:auto;overflow:auto;max-width:768px;margin:3rem auto;padding:0 32px}.ProseMirror{outline:none}</style>',
+    '</head><body>',
+    `<div class="ProseMirror content">${body}</div>`,
+    '</body></html>',
+  ].join('\n');
+  const result = await quill.exportHtml(`${docTitle()}.html`, html);
+  if (result) flashStatus(`Exported ${basename(result.path)}`);
+}
+
+// --- Crash-recovery draft (debounced mirror of the working copy) ---
+
+let draftTimer = null;
+function scheduleDraft() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    quill.updateDraft({ path: currentPath, markdown: currentMarkdown(), dirty: isDirty() });
+  }, 800);
+}
+
 // --- Source mode ---
 
 function autosizeSource() {
@@ -275,18 +929,20 @@ function autosizeSource() {
 function toggleSource() {
   closeLinkDialog(false);
   if (!sourceMode) {
-    els.source.value = getMarkdown();
+    closeFind();
+    els.source.value = docFrontMatter + getMarkdown();
     els.editor.hidden = true;
     els.source.hidden = false;
     sourceMode = true;
     autosizeSource();
     els.source.focus();
   } else {
-    const markdown = els.source.value;
+    const { front, body } = splitFrontMatter(els.source.value);
     sourceMode = false;
+    docFrontMatter = front;
     els.source.hidden = true;
     els.editor.hidden = false;
-    editor.commands.setContent(markdown, false);
+    editor.commands.setContent(body, false);
     editor.commands.focus();
   }
   els.modePill.hidden = !sourceMode;
@@ -298,6 +954,7 @@ els.source.addEventListener('input', () => {
   markDirtyNow();
   autosizeSource();
   scheduleStateSync();
+  scheduleDraft();
 });
 
 // --- File operations ---
@@ -313,6 +970,8 @@ async function doSave(saveAs = false) {
   if (!result) return false;
   currentPath = result.path;
   savedMarkdown = markdown;
+  clearTimeout(draftTimer);
+  quill.updateDraft({ dirty: false });
   syncState();
   return true;
 }
@@ -365,6 +1024,12 @@ function runCommand(name, arg) {
       })();
     case 'toggle-source': return toggleSource();
     case 'self-test': return runSelfTest();
+    case 'find-open': return openFind(false);
+    case 'find-replace': return openFind(true);
+    case 'find-next': return findStep(1);
+    case 'find-prev': return findStep(-1);
+    case 'export-pdf': return void doExportPdf();
+    case 'export-html': return void doExportHtml();
     case 'undo':
       return sourceMode ? document.execCommand('undo') : chain().undo().run();
     case 'redo':
@@ -398,6 +1063,21 @@ function runCommand(name, arg) {
     case 'tableColAfter': return chain().addColumnAfter().run();
     case 'tableColDelete': return chain().deleteColumn().run();
     case 'tableDelete': return chain().deleteTable().run();
+    case 'mathInsert': return insertMath(false);
+    case 'mathBlockInsert': return insertMath(true);
+    case 'mermaidInsert':
+      return chain()
+        .insertContent({
+          type: 'codeBlock',
+          attrs: { language: 'mermaid' },
+          content: [
+            {
+              type: 'text',
+              text: 'graph TD\n  A[Start] --> B{Choice}\n  B -->|yes| C[Ship it]\n  B -->|no| D[Iterate]',
+            },
+          ],
+        })
+        .run();
   }
 }
 
@@ -448,13 +1128,53 @@ function runSelfTest() {
     editor.commands.insertTable({ rows: 2, cols: 2, withHeaderRow: true });
     const tableOut = getMarkdown();
     const tableInsert = tableOut.includes('| --- | --- |') && !tableOut.includes('[table]');
+    // Front matter, math, mermaid, and relative images round-trip intact.
+    loadDocument(
+      [
+        '---',
+        'title: t',
+        '---',
+        '',
+        '# Body',
+        '',
+        '![alt](assets/pic.png)',
+        '',
+        'Inline $e=mc^2$ math.',
+        '',
+        '$$\\int_0^1 x dx$$',
+        '',
+        '```mermaid',
+        'graph TD',
+        '  A --> B',
+        '```',
+      ].join('\n'),
+      '/tmp/quill-selftest/doc.md'
+    );
+    const richOut = currentMarkdown();
+    const fmOk = richOut.startsWith('---\ntitle: t\n---\n') && richOut.includes('# Body');
+    const mathOk =
+      richOut.includes('$e=mc^2$') &&
+      richOut.includes('$$\n\\int_0^1 x dx\n$$') &&
+      Boolean(els.editor.querySelector('.katex'));
+    const mermaidOk =
+      richOut.includes('```mermaid') && Boolean(els.editor.querySelector('.mermaid-preview'));
+    const img = els.editor.querySelector('img');
+    const imageOk =
+      Boolean(img) && img.getAttribute('src') === 'file:///tmp/quill-selftest/assets/pic.png';
+    window.__openFind('body');
+    const findOk = searchState.matches.length === 1;
+    closeFind();
     loadDocument('', null);
-    const ok = Boolean(roundTrip && dom && tableInsert);
+    const ok = Boolean(
+      roundTrip && dom && tableInsert && fmOk && mathOk && mermaidOk && imageOk && findOk
+    );
     quill.smokeResult(
       ok,
       ok
         ? ''
-        : `roundTrip=${roundTrip} dom=${Boolean(dom)} tableInsert=${tableInsert} out=${JSON.stringify(out)}`
+        : `roundTrip=${roundTrip} dom=${Boolean(dom)} tableInsert=${tableInsert} ` +
+            `fm=${fmOk} math=${mathOk} mermaid=${mermaidOk} image=${imageOk} find=${findOk} ` +
+            `rich=${JSON.stringify(richOut)}`
     );
   } catch (err) {
     quill.smokeResult(false, String((err && err.stack) || err));
@@ -474,9 +1194,13 @@ const MENUS = [
     items: [
       { label: 'New', cmd: 'new', keys: 'Ctrl+N' },
       { label: 'Open…', cmd: 'open', keys: 'Ctrl+O' },
+      { recents: true },
       { sep: true },
       { label: 'Save', cmd: 'save', keys: 'Ctrl+S' },
       { label: 'Save As…', cmd: 'save-as', keys: 'Ctrl+Shift+S' },
+      { sep: true },
+      { label: 'Export as PDF…', cmd: 'export-pdf' },
+      { label: 'Export as HTML…', cmd: 'export-html' },
       { sep: true },
       { label: 'Exit', action: 'quit' },
     ],
@@ -491,6 +1215,11 @@ const MENUS = [
       { label: 'Copy', action: 'copy', keys: 'Ctrl+C' },
       { label: 'Paste', action: 'paste', keys: 'Ctrl+V' },
       { label: 'Paste as Plain Text', action: 'pasteAndMatchStyle', keys: 'Ctrl+Shift+V' },
+      { sep: true },
+      { label: 'Find…', cmd: 'find-open', keys: 'Ctrl+F' },
+      { label: 'Find Next', cmd: 'find-next', keys: 'Ctrl+G' },
+      { label: 'Find Previous', cmd: 'find-prev', keys: 'Ctrl+Shift+G' },
+      { label: 'Find and Replace…', cmd: 'find-replace', keys: 'Ctrl+Alt+F' },
       { sep: true },
       { label: 'Select All', action: 'selectAll', keys: 'Ctrl+A' },
     ],
@@ -516,6 +1245,10 @@ const MENUS = [
       { label: 'Blockquote', cmd: 'blockquote', keys: 'Ctrl+Shift+B' },
       { label: 'Code Block', cmd: 'codeBlock', keys: 'Ctrl+Alt+C' },
       { label: 'Divider', cmd: 'hr' },
+      { sep: true },
+      { label: 'Math…', cmd: 'mathInsert', keys: 'Ctrl+Alt+M' },
+      { label: 'Math Block…', cmd: 'mathBlockInsert' },
+      { label: 'Mermaid Diagram', cmd: 'mermaidInsert' },
     ],
   },
   {
@@ -555,11 +1288,48 @@ function updateMenuDisabled(wrap) {
   }
 }
 
+async function populateRecents(container) {
+  const recents = await quill.getRecents();
+  container.textContent = '';
+  const addRow = (label, title, onClick) => {
+    const row = document.createElement('button');
+    row.className = 'menu-item';
+    row.tabIndex = -1;
+    if (title) row.title = title;
+    const name = document.createElement('span');
+    name.textContent = label;
+    row.appendChild(name);
+    row.addEventListener('mousedown', (e) => e.preventDefault());
+    row.addEventListener('mouseenter', () => row.focus());
+    row.addEventListener('click', () => {
+      closeMenus();
+      onClick();
+    });
+    container.appendChild(row);
+    return row;
+  };
+  if (!recents.length) return;
+  const sep = document.createElement('div');
+  sep.className = 'menu-sep';
+  container.appendChild(sep);
+  for (const p of recents.slice(0, 8)) {
+    addRow(basename(p), p, () => loadFromPath(p));
+  }
+  const clear = addRow('Clear Recent Files', '', () => {
+    quill.clearRecents();
+  });
+  clear.classList.add('menu-item-secondary');
+}
+
 function setOpenMenu(index) {
   openMenuIndex = index;
   [...menubarEl.children].forEach((wrap, i) => {
     wrap.classList.toggle('open', i === index);
-    if (i === index) updateMenuDisabled(wrap);
+    if (i === index) {
+      updateMenuDisabled(wrap);
+      const recents = wrap.querySelector('.menu-recents');
+      if (recents) void populateRecents(recents);
+    }
   });
   // While a menu is open the titlebar stops being a drag region (see CSS), so
   // clicks anywhere on it reach the DOM and dismiss the menu — native behavior.
@@ -606,6 +1376,12 @@ function buildMenubar() {
         const sep = document.createElement('div');
         sep.className = 'menu-sep';
         drop.appendChild(sep);
+        continue;
+      }
+      if (item.recents) {
+        const container = document.createElement('div');
+        container.className = 'menu-recents';
+        drop.appendChild(container);
         continue;
       }
       const row = document.createElement('button');
@@ -712,6 +1488,11 @@ if (IS_CUSTOM_MENU) {
       quill.menuAction('toggle-fullscreen');
       return;
     }
+    if (e.ctrlKey && e.altKey && !e.metaKey && e.code === 'KeyF') {
+      e.preventDefault();
+      runCommand('find-replace');
+      return;
+    }
     if (!e.ctrlKey || e.altKey || e.metaKey) return;
     let cmd = null;
     if (!e.shiftKey && e.code === 'KeyN') cmd = 'new';
@@ -719,6 +1500,8 @@ if (IS_CUSTOM_MENU) {
     else if (!e.shiftKey && e.code === 'KeyS') cmd = 'save';
     else if (e.shiftKey && e.code === 'KeyS') cmd = 'save-as';
     else if (!e.shiftKey && e.code === 'KeyK') cmd = 'link';
+    else if (!e.shiftKey && e.code === 'KeyF') cmd = 'find-open';
+    else if (e.code === 'KeyG') cmd = e.shiftKey ? 'find-prev' : 'find-next';
     else if (e.code === 'Slash' || e.key === '/') cmd = 'toggle-source';
     if (cmd) {
       e.preventDefault();
@@ -764,10 +1547,24 @@ els.scroll.addEventListener('scroll', () => {
 // --- Init ---
 
 (async () => {
-  const pending = await quill.getPendingOpen();
-  if (pending) loadDocument(pending.content, pending.path);
+  const { file, draft } = (await quill.getPendingOpen()) || {};
+  const draftMatches = Boolean(draft) && (draft.path || null) === (file ? file.path : null);
+  if (file) loadDocument(file.content, file.path, draftMatches);
   else {
-    savedMarkdown = getMarkdown();
+    savedMarkdown = currentMarkdown();
     syncState();
+  }
+  if (draftMatches && draft.markdown !== currentMarkdown()) {
+    // The last session ended (or crashed) with unsaved changes — restore them
+    // on top of the on-disk baseline, leaving the document marked Edited.
+    const { front, body } = splitFrontMatter(draft.markdown);
+    docFrontMatter = front;
+    editor.commands.setContent(body, false);
+    markDirtyNow();
+    syncState();
+    scheduleDraft();
+    flashStatus('Recovered unsaved changes');
+  } else if (draft && !draftMatches) {
+    quill.updateDraft({ dirty: false }); // stale draft for a different document
   }
 })();

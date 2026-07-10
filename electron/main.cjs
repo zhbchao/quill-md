@@ -7,6 +7,15 @@ const isMac = process.platform === 'darwin';
 const isSmoke = process.argv.includes('--smoke-test');
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
 
+// Dev-only: --probe <js> runs a snippet headlessly and exits (optionally with
+// --user-data-dir <dir> for an isolated state sandbox in tests).
+const probeIndex = process.argv.indexOf('--probe');
+const isProbe = probeIndex !== -1 && !app.isPackaged;
+const udIndex = process.argv.indexOf('--user-data-dir');
+if (udIndex !== -1 && !app.isPackaged) {
+  app.setPath('userData', process.argv[udIndex + 1]);
+}
+
 // --screenshot <out.png> [--dark] [--file <doc.md>] renders offscreen and exits.
 const shotIndex = process.argv.indexOf('--screenshot');
 const isShot = shotIndex !== -1;
@@ -16,6 +25,47 @@ let win = null;
 let documentEdited = false;
 let allowClose = false;
 let pendingOpenPath = null;
+
+// --- Persistent app state (recent files, last open document) ---
+
+const stateFile = () => path.join(app.getPath('userData'), 'quill-state.json');
+const draftFile = () => path.join(app.getPath('userData'), 'draft.json');
+
+let appState = { recentFiles: [], lastFile: null };
+let stateTimer = null;
+
+async function atomicWrite(target, content) {
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.quill-tmp`);
+  try {
+    await fs.writeFile(tmp, content, 'utf8');
+    await fs.rename(tmp, target);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+
+async function loadAppState() {
+  try {
+    appState = { ...appState, ...JSON.parse(await fs.readFile(stateFile(), 'utf8')) };
+  } catch {
+    /* first launch */
+  }
+}
+
+function saveAppState() {
+  clearTimeout(stateTimer);
+  stateTimer = setTimeout(() => {
+    atomicWrite(stateFile(), JSON.stringify(appState)).catch(() => {});
+  }, 250);
+}
+
+function rememberRecent(filePath) {
+  if (!filePath) return;
+  appState.recentFiles = [filePath, ...appState.recentFiles.filter((p) => p !== filePath)].slice(0, 10);
+  app.addRecentDocument(filePath);
+  saveAppState();
+}
 
 const fileIndex = process.argv.indexOf('--file');
 if (fileIndex !== -1) pendingOpenPath = process.argv[fileIndex + 1];
@@ -85,8 +135,24 @@ function createWindow() {
   win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 
   win.once('ready-to-show', () => {
-    if (!isSmoke && !isShot) win.show();
+    if (!isSmoke && !isShot && !isProbe) win.show();
   });
+
+  if (isProbe && !isShot) {
+    win.webContents.on('did-finish-load', () => {
+      setTimeout(async () => {
+        const result = await win.webContents
+          .executeJavaScript(process.argv[probeIndex + 1])
+          .catch((err) => `PROBE_ERROR: ${err}`);
+        console.log('PROBE:', JSON.stringify(result));
+        app.exit(0);
+      }, 1500);
+    });
+    setTimeout(() => {
+      console.error('PROBE_TIMEOUT');
+      app.exit(1);
+    }, 30000);
+  }
 
   if (isShot) {
     setTimeout(() => {
@@ -116,6 +182,30 @@ function createWindow() {
               `window.__openMenu && window.__openMenu(${Number(process.argv[menuArg + 1]) || 0}); null`
             );
             await new Promise((r) => setTimeout(r, 300));
+          }
+          const findArg = process.argv.indexOf('--find');
+          if (findArg !== -1) {
+            await win.webContents.executeJavaScript(
+              `window.__openFind && window.__openFind(${JSON.stringify(process.argv[findArg + 1] || '')}); null`
+            );
+            await new Promise((r) => setTimeout(r, 300));
+          }
+          // Dev-only escape hatch for headless debugging.
+          if (isProbe) {
+            const result = await win.webContents
+              .executeJavaScript(process.argv[probeIndex + 1])
+              .catch((err) => `PROBE_ERROR: ${err}`);
+            console.log('PROBE:', JSON.stringify(result));
+          }
+          // Dev-only: exercise the real PDF export pipeline headlessly.
+          const pdfArg = process.argv.indexOf('--print-pdf');
+          if (pdfArg !== -1 && !app.isPackaged) {
+            const data = await win.webContents.printToPDF({
+              printBackground: true,
+              pageSize: 'A4',
+            });
+            await fs.writeFile(process.argv[pdfArg + 1], data);
+            console.log('PDF_OK', process.argv[pdfArg + 1]);
           }
           const image = await win.webContents.capturePage();
           await fs.writeFile(shotOut, image.toPNG());
@@ -151,6 +241,8 @@ function createWindow() {
       .then(({ response }) => {
         if (response === 0) sendCommand('save-then-close');
         else if (response === 1) {
+          // Explicitly discarded — the crash-recovery draft is void too.
+          fsSync.rmSync(draftFile(), { force: true });
           allowClose = true;
           win.close();
         }
@@ -219,9 +311,17 @@ function buildMenu() {
       submenu: [
         formatItem('New', 'new', 'CmdOrCtrl+N'),
         formatItem('Open…', 'open', 'CmdOrCtrl+O'),
+        {
+          label: 'Open Recent',
+          role: 'recentDocuments',
+          submenu: [{ role: 'clearRecentDocuments' }],
+        },
         { type: 'separator' },
         formatItem('Save', 'save', 'CmdOrCtrl+S'),
         formatItem('Save As…', 'save-as', 'Shift+CmdOrCtrl+S'),
+        { type: 'separator' },
+        formatItem('Export as PDF…', 'export-pdf'),
+        formatItem('Export as HTML…', 'export-html'),
         { type: 'separator' },
         { role: 'close' },
         ...(isMac ? [] : [{ role: 'quit' }]),
@@ -239,6 +339,16 @@ function buildMenu() {
         { role: 'pasteAndMatchStyle' },
         { role: 'delete' },
         { role: 'selectAll' },
+        { type: 'separator' },
+        {
+          label: 'Find',
+          submenu: [
+            formatItem('Find…', 'find-open', 'CmdOrCtrl+F'),
+            formatItem('Find Next', 'find-next', 'CmdOrCtrl+G'),
+            formatItem('Find Previous', 'find-prev', 'Shift+CmdOrCtrl+G'),
+            formatItem('Find and Replace…', 'find-replace', 'Alt+CmdOrCtrl+F'),
+          ],
+        },
         ...(isMac
           ? [
               { type: 'separator' },
@@ -271,6 +381,10 @@ function buildMenu() {
         formatItem('Blockquote', 'blockquote', 'Shift+CmdOrCtrl+B'),
         formatItem('Code Block', 'codeBlock', 'Alt+CmdOrCtrl+C'),
         formatItem('Divider', 'hr'),
+        { type: 'separator' },
+        formatItem('Math…', 'mathInsert', 'Alt+CmdOrCtrl+M'),
+        formatItem('Math Block…', 'mathBlockInsert'),
+        formatItem('Mermaid Diagram', 'mermaidInsert'),
       ],
     },
     {
@@ -362,13 +476,10 @@ ipcMain.handle('doc:save', async (e, { path: filePath, content }) => {
   }
   // Write-then-rename so a crash or full disk mid-write can never leave the
   // user's file truncated; the rename replaces the target in one step.
-  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.quill-tmp`);
   try {
-    await fs.writeFile(tmp, content, 'utf8');
-    await fs.rename(tmp, target);
+    await atomicWrite(target, content);
     return { path: target };
   } catch (err) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
     showFileError('saved', target, err);
     return null;
   }
@@ -387,14 +498,108 @@ ipcMain.handle('doc:confirmChange', async () => {
   return response;
 });
 
+// Returns what the renderer should show on launch: an explicitly requested
+// file, or the last session's document — plus any crash-recovery draft.
+// Smoke/screenshot runs must stay deterministic, so they skip both.
 ipcMain.handle('doc:getPendingOpen', async () => {
-  if (!pendingOpenPath) return null;
-  const p = pendingOpenPath;
+  let draft = null;
+  if (!isSmoke && !isShot) {
+    try {
+      draft = JSON.parse(await fs.readFile(draftFile(), 'utf8'));
+    } catch {
+      /* no draft */
+    }
+  }
+  let openPath = pendingOpenPath;
   pendingOpenPath = null;
+  if (!openPath && !isSmoke && !isShot) {
+    if (draft && draft.path) openPath = draft.path;
+    else if (!draft && appState.lastFile && fsSync.existsSync(appState.lastFile)) {
+      openPath = appState.lastFile;
+    }
+  }
+  let file = null;
+  if (openPath) {
+    try {
+      file = { path: openPath, content: await fs.readFile(openPath, 'utf8') };
+    } catch {
+      /* deleted or unreadable — start fresh */
+    }
+  }
+  return { file, draft };
+});
+
+// The renderer streams the working copy here (debounced). dirty=false means
+// the document matches disk, so any recovery draft is stale — delete it.
+ipcMain.on('draft:update', (e, draft) => {
+  if (isSmoke || isShot) return;
+  if (!draft || !draft.dirty) {
+    fs.rm(draftFile(), { force: true }).catch(() => {});
+  } else {
+    atomicWrite(
+      draftFile(),
+      JSON.stringify({ path: draft.path || null, markdown: draft.markdown })
+    ).catch(() => {});
+  }
+});
+
+ipcMain.handle('recents:get', () =>
+  appState.recentFiles.filter((p) => fsSync.existsSync(p))
+);
+
+ipcMain.on('recents:clear', () => {
+  appState.recentFiles = [];
+  app.clearRecentDocuments();
+  saveAppState();
+});
+
+ipcMain.handle('export:pdf', async (e, suggestedName) => {
+  const { canceled, filePath: out } = await dialog.showSaveDialog(win, {
+    defaultPath: suggestedName || 'Untitled.pdf',
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (canceled || !out) return null;
   try {
-    const content = await fs.readFile(p, 'utf8');
-    return { path: p, content };
-  } catch {
+    const data = await win.webContents.printToPDF({ printBackground: true, pageSize: 'A4' });
+    await fs.writeFile(out, data);
+    return { path: out };
+  } catch (err) {
+    showFileError('exported', out, err);
+    return null;
+  }
+});
+
+ipcMain.handle('export:html', async (e, { suggestedName, html }) => {
+  const { canceled, filePath: out } = await dialog.showSaveDialog(win, {
+    defaultPath: suggestedName || 'Untitled.html',
+    filters: [{ name: 'HTML', extensions: ['html'] }],
+  });
+  if (canceled || !out) return null;
+  try {
+    await atomicWrite(out, html);
+    return { path: out };
+  } catch (err) {
+    showFileError('exported', out, err);
+    return null;
+  }
+});
+
+// Pasted/dragged images are written next to the document, in assets/.
+ipcMain.handle('image:save', async (e, { docPath, ext, bytes }) => {
+  try {
+    const dir = path.join(path.dirname(docPath), 'assets');
+    await fs.mkdir(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    const safeExt = String(ext).replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'png';
+    let name = `image-${stamp}.${safeExt}`;
+    let n = 1;
+    while (fsSync.existsSync(path.join(dir, name))) {
+      name = `image-${stamp}-${n++}.${safeExt}`;
+    }
+    await fs.writeFile(path.join(dir, name), Buffer.from(bytes));
+    return { relPath: `assets/${name}` };
+  } catch (err) {
+    showFileError('saved', 'pasted image', err);
     return null;
   }
 });
@@ -408,6 +613,11 @@ ipcMain.on('doc:setFile', (e, filePath) => {
   if (!win || win.isDestroyed()) return;
   if (isMac) win.setRepresentedFilename(filePath || '');
   win.setTitle(filePath ? path.basename(filePath) : 'Untitled');
+  if (!isSmoke && !isShot) {
+    appState.lastFile = filePath || null;
+    if (filePath) rememberRecent(filePath);
+    else saveAppState();
+  }
 });
 
 ipcMain.on('doc:closeNow', () => {
@@ -450,7 +660,7 @@ app.on('open-file', (e, filePath) => {
 });
 
 // Windows: route "Open With" / double-clicked files through a single instance.
-if (process.platform === 'win32' && !isSmoke && !isShot) {
+if (process.platform === 'win32' && !isSmoke && !isShot && !isProbe) {
   if (!app.requestSingleInstanceLock()) {
     app.quit();
   } else {
@@ -470,7 +680,8 @@ if (process.platform === 'win32' && !isSmoke && !isShot) {
   if (launchFile) pendingOpenPath = launchFile;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await loadAppState();
   if (!app.isPackaged && app.dock) {
     try {
       app.dock.setIcon(path.join(__dirname, '..', 'build', 'icon.png'));

@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('quill', {
   setFile: (filePath) => ipcRenderer.send('doc:setFile', filePath),
   closeNow: () => ipcRenderer.send('doc:closeNow'),
   openExternal: (url) => ipcRenderer.send('shell:openExternal', url),
+  getRecents: () => ipcRenderer.invoke('recents:get'),
+  clearRecents: () => ipcRenderer.send('recents:clear'),
+  updateDraft: (draft) => ipcRenderer.send('draft:update', draft),
+  exportPdf: (name) => ipcRenderer.invoke('export:pdf', name),
+  exportHtml: (name, html) => ipcRenderer.invoke('export:html', { suggestedName: name, html }),
+  saveImage: (docPath, ext, bytes) => ipcRenderer.invoke('image:save', { docPath, ext, bytes }),
   smokeResult: (ok, detail) => ipcRenderer.send('smoke:result', ok, detail),
   pathForFile: (file) => webUtils.getPathForFile(file),
   onCommand: (callback) =>

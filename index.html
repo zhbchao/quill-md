@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: file:;"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: file:; font-src 'self' data:;"
     />
     <title>Quill</title>
     <link rel="stylesheet" href="/src/styles.css" />
@@ -32,9 +32,34 @@
     </main>
 
     <footer id="statusbar">
+      <span id="status-msg" hidden></span>
       <span id="mode-pill" hidden>Markdown · ⌘/ to return</span>
       <span id="word-count">0 words</span>
     </footer>
+
+    <div id="find-bar" hidden>
+      <div class="find-row">
+        <input id="find-input" type="text" placeholder="Find" spellcheck="false" />
+        <span id="find-count"></span>
+        <button id="find-prev" title="Previous match">‹</button>
+        <button id="find-next" title="Next match">›</button>
+        <button id="find-toggle-replace" title="Replace">⌄</button>
+        <button id="find-close" title="Close">✕</button>
+      </div>
+      <div class="find-row find-replace-row">
+        <input id="replace-input" type="text" placeholder="Replace with" spellcheck="false" />
+        <button id="replace-one" class="find-text-btn">Replace</button>
+        <button id="replace-all" class="find-text-btn">All</button>
+      </div>
+    </div>
+
+    <div id="math-overlay" hidden>
+      <div class="link-card math-card">
+        <input id="math-input" type="text" placeholder="LaTeX, e.g. e = mc^2" spellcheck="false" />
+        <div id="math-preview"></div>
+        <div class="link-hint">Return to apply &nbsp;·&nbsp; Esc to cancel</div>
+      </div>
+    </div>
 
     <div id="bubble" style="visibility: hidden">
       <button data-cmd="bold" title="Bold ⌘B"><b>B</b></button>

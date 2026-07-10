@@ -40,7 +40,20 @@ npm run dist       # → installable dmg / exe
 - **Live WYSIWYG editing** — type `# `, `**bold**`, `> `, `- [ ]`, or
   triple-backtick and watch it become the real thing, instantly.
 - **Real Markdown files** — open and save standard `.md`/GFM. Tasks, tables,
-  fenced code with syntax highlighting, images, and links all round-trip.
+  fenced code with syntax highlighting, images, links, and YAML front matter
+  all round-trip.
+- **Math & diagrams** — `$…$` / `$$…$$` render with KaTeX (double-click to
+  edit); ` ```mermaid ` code blocks show a live diagram preview.
+- **Never lose work** — saves are atomic, and unsaved changes survive crashes
+  and force-quits: the next launch restores them, marked Edited.
+- **Find & Replace** — `⌘F`, with `⌘G`/`⇧⌘G` to cycle matches.
+- **Images that just work** — paste or drop an image and it's saved to
+  `assets/` beside your document with a relative link; relative paths in
+  existing files resolve and display.
+- **Export** — PDF (via the print pipeline, typography intact) and standalone
+  HTML.
+- **Open Recent** — native recents on macOS, in the File menu on Windows; the
+  last document reopens on launch.
 - **Markdown source view** — `⌘/` flips to the raw source and back.
 - **Native macOS feel** — hidden-inset title bar, system menus and shortcuts,
   the unsaved-changes dot in the close button, represented-file icon,
@@ -61,6 +74,8 @@ npm run dist       # → installable dmg / exe
 | `⇧⌘B` | blockquote |
 | `⌥⌘C` | code block |
 | `⌥⌘T` | insert table (`Tab`/`⇧Tab` moves between cells) |
+| `⌥⌘M` | insert math |
+| `⌘F` / `⌘G` / `⇧⌘G` / `⌥⌘F` | find / next / previous / replace |
 | `⌘/` | toggle Markdown source |
 | `⌘S` / `⇧⌘S` / `⌘O` / `⌘N` | save / save as / open / new |
 

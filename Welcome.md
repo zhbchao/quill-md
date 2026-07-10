@@ -37,6 +37,21 @@ function greet(name) {
 | Dark mode | Follows the system |
 | Distractions | None |
 
+## Math
+
+Inline math like $e = mc^2$ sits in the text; display math gets its own line:
+
+$$\int_0^1 x^2\,dx = \frac{1}{3}$$
+
+## Diagrams
+
+```mermaid
+graph LR
+  A[Write] --> B{Happy?}
+  B -->|yes| C[Save]
+  B -->|no| A
+```
+
 ---
 
 That's it. `⌘N` for a fresh page — happy writing.
