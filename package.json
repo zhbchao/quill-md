@@ -1,7 +1,7 @@
 {
   "name": "quill-md",
   "productName": "Quill",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A refined WYSIWYG Markdown editor",
   "author": "zhbchao <zhbchao@gmail.com>",
   "main": "electron/main.cjs",
@@ -24,6 +24,7 @@
       "dist/**"
     ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "afterPack": "build/after-pack.cjs",
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
